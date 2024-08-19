@@ -1,45 +1,61 @@
 pub use rocketsim_rs;
 
-mod render;
-
 use rocketsim_rs::{
     cxx::UniquePtr,
     glam_ext::GameStateA,
     sim::{Arena, CarControls},
 };
+use std::rc::Rc;
+
+pub type FullObs = Vec<Vec<f32>>;
 
 pub struct StepResult {
-    pub obs: Vec<(u32, Vec<f32>)>,
+    pub obs: Rc<FullObs>,
     pub rewards: Vec<f32>,
     pub is_terminal: bool,
+    pub truncated: bool,
+    pub state: Rc<GameStateA>,
 }
 
-/// SS - state setting
-/// O - observations
-/// A - actions
-/// R - rewards
-/// T - terminal
-/// SI - shared info
-pub struct Env<SS: StateSetter<SI>, O: Obs<SI>, A: Action<SI>, R: Reward<SI>, T: Terminal<SI>, SI> {
+pub struct Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
+where
+    SS: StateSetter<SI>,
+    OBS: Obs<SI>,
+    ACT: Action<SI>,
+    REW: Reward<SI>,
+    TERM: Terminal<SI>,
+    TRUNC: Truncate<SI>,
+{
     arena: UniquePtr<Arena>,
     state_setter: SS,
-    observations: O,
-    action: A,
-    reward: R,
-    terminal: T,
+    observations: OBS,
+    action: ACT,
+    reward: REW,
+    terminal: TERM,
+    truncate: TRUNC,
     shared_info: SI,
-    render: bool,
-    last_state: Option<GameStateA>,
+    tick_skip: u32,
+    last_state: Option<Rc<GameStateA>>,
 }
 
-impl<SS: StateSetter<SI>, O: Obs<SI>, A: Action<SI>, R: Reward<SI>, T: Terminal<SI>, SI> Env<SS, O, A, R, T, SI> {
+impl<SS, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
+where
+    SS: StateSetter<SI>,
+    OBS: Obs<SI>,
+    ACT: Action<SI>,
+    REW: Reward<SI>,
+    TERM: Terminal<SI>,
+    TRUNC: Truncate<SI>,
+{
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         arena: UniquePtr<Arena>,
         state_setter: SS,
-        observations: O,
-        action: A,
-        rewards: R,
-        terminal: T,
+        observations: OBS,
+        action: ACT,
+        reward: REW,
+        terminal: TERM,
+        truncate: TRUNC,
         shared_info: SI,
     ) -> Self {
         Self {
@@ -47,16 +63,21 @@ impl<SS: StateSetter<SI>, O: Obs<SI>, A: Action<SI>, R: Reward<SI>, T: Terminal<
             state_setter,
             observations,
             action,
-            reward: rewards,
+            reward,
             terminal,
+            truncate,
             shared_info,
-            render: false,
+            tick_skip: ACT::get_tick_skip(),
             last_state: None,
         }
     }
 
-    pub fn set_render(&mut self, render: bool) {
-        self.render = render;
+    pub fn get_obs_space(&self, agent_id: u32) -> usize {
+        self.observations.get_obs_space(agent_id, &self.shared_info)
+    }
+
+    pub fn get_action_space(&self, agent_id: u32) -> usize {
+        self.action.get_action_space(agent_id, &self.shared_info)
     }
 
     pub fn num_cars(&self) -> usize {
@@ -64,8 +85,9 @@ impl<SS: StateSetter<SI>, O: Obs<SI>, A: Action<SI>, R: Reward<SI>, T: Terminal<
     }
 
     /// returns next obs
-    pub fn reset(&mut self) -> Vec<(u32, Vec<f32>)> {
-        self.state_setter.apply(&mut self.arena, &mut self.shared_info);
+    pub fn reset(&mut self) -> Rc<FullObs> {
+        self.state_setter
+            .apply(&mut self.arena, &mut self.shared_info);
 
         let state = self.arena.pin_mut().get_game_state().to_glam();
         self.observations.reset(&state, &mut self.shared_info);
@@ -74,41 +96,46 @@ impl<SS: StateSetter<SI>, O: Obs<SI>, A: Action<SI>, R: Reward<SI>, T: Terminal<
         self.reward.reset(&state, &mut self.shared_info);
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
-        self.last_state = Some(state);
+        self.last_state = Some(Rc::new(state));
 
-        obs
+        Rc::new(obs)
     }
 
-    pub fn step(&mut self, raw_actions: Vec<Vec<f32>>, tick_skip: u32) -> StepResult {
+    pub fn step(&mut self, raw_actions: ACT::Input) -> StepResult {
         let last_state = self.last_state.as_ref().expect("Must call reset() first!");
-        let parsed_actions = self
-            .action
-            .parse_actions(&raw_actions, last_state, &mut self.shared_info);
+        let parsed_actions =
+            self.action
+                .parse_actions(raw_actions, last_state, &mut self.shared_info);
         let mapped_actions = parsed_actions
             .into_iter()
             .enumerate()
             .map(|(i, controls)| (last_state.cars[i].id, controls))
             .collect::<Vec<_>>();
 
-        self.arena.pin_mut().set_all_controls(&mapped_actions).unwrap();
-        self.arena.pin_mut().step(tick_skip);
+        self.arena
+            .pin_mut()
+            .set_all_controls(&mapped_actions)
+            .unwrap();
+        self.arena.pin_mut().step(self.tick_skip);
 
-        // if self.render {
-        //     // ensure nonblocking
-        //     render::render(&self.arena);
-        // }
-
-        let new_state = self.arena.pin_mut().get_game_state().to_glam();
-        let obs = self.observations.build_obs(last_state, &mut self.shared_info);
+        let state = Rc::new(self.arena.pin_mut().get_game_state().to_glam());
+        let obs = self
+            .observations
+            .build_obs(last_state, &mut self.shared_info);
         let rewards = self.reward.get_rewards(last_state, &mut self.shared_info);
         let is_terminal = self.terminal.is_terminal(last_state, &mut self.shared_info);
+        let truncated = self
+            .truncate
+            .should_truncate(last_state, &mut self.shared_info);
 
-        self.last_state = Some(new_state);
+        self.last_state = Some(state.clone());
 
         StepResult {
-            obs,
+            obs: Rc::new(obs),
             rewards,
             is_terminal,
+            truncated,
+            state,
         }
     }
 }
@@ -118,17 +145,20 @@ pub trait StateSetter<SI> {
 }
 
 pub trait Obs<SI> {
-    fn get_obs_space(&self) -> usize;
+    fn get_obs_space(&self, agent_id: u32, shared_info: &SI) -> usize;
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SI) -> Vec<(u32, Vec<f32>)>;
+    fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SI) -> FullObs;
 }
 
 pub trait Action<SI> {
-    fn get_action_space(&self, agent_id: u32, shared_info: &mut SI) -> usize;
+    type Input;
+
+    fn get_tick_skip() -> u32;
+    fn get_action_space(&self, agent_id: u32, shared_info: &SI) -> usize;
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
     fn parse_actions(
         &mut self,
-        actions: &[Vec<f32>],
+        actions: Self::Input,
         state: &GameStateA,
         shared_info: &mut SI,
     ) -> Vec<CarControls>;
@@ -142,4 +172,9 @@ pub trait Reward<SI> {
 pub trait Terminal<SI> {
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
     fn is_terminal(&mut self, state: &GameStateA, shared_info: &mut SI) -> bool;
+}
+
+pub trait Truncate<SI> {
+    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
+    fn should_truncate(&mut self, state: &GameStateA, shared_info: &mut SI) -> bool;
 }

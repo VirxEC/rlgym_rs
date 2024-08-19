@@ -1,9 +1,11 @@
-use std::time::Instant;
-
-use rlgym_rs::{Action, Env, Obs, Reward, StateSetter, Terminal};
+use rlgym_rs::{Action, Env, FullObs, Obs, Reward, StateSetter, Terminal, Truncate};
 use rocketsim_rs::{
-    cxx::UniquePtr, glam_ext::{BallA, CarInfoA, GameStateA}, init, sim::{Arena, CarConfig, CarControls, Team}
+    cxx::UniquePtr,
+    glam_ext::{BallA, CarInfoA, GameStateA},
+    init,
+    sim::{Arena, CarConfig, CarControls, Team},
 };
+use std::time::Instant;
 
 struct SharedInfo {
     rng: fastrand::Rng,
@@ -20,11 +22,7 @@ impl Default for SharedInfo {
 struct MyStateSetter;
 
 impl StateSetter<SharedInfo> for MyStateSetter {
-    fn apply(
-        &mut self,
-        arena: &mut UniquePtr<rocketsim_rs::sim::Arena>,
-        shared_info: &mut SharedInfo,
-    ) {
+    fn apply(&mut self, arena: &mut UniquePtr<Arena>, shared_info: &mut SharedInfo) {
         arena.pin_mut().reset_tick_count();
 
         if arena.num_cars() != 2 {
@@ -76,25 +74,31 @@ impl MyObs {
 }
 
 impl Obs<SharedInfo> for MyObs {
-    fn get_obs_space(&self) -> usize {
+    fn get_obs_space(&self, _agent_id: u32, _shared_info: &SharedInfo) -> usize {
         Self::BALL_OBS + Self::CAR_OBS * self.zero_padding * 2
     }
 
     fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
 
-    fn build_obs(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> Vec<(u32, Vec<f32>)> {
+    fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SharedInfo) -> FullObs {
         let mut obs = Vec::with_capacity(state.cars.len());
 
         let ball_obs = Self::get_ball_obs(&state.ball);
         let cars = Self::get_all_car_obs(&state.cars);
 
-        let full_obs = self.get_obs_space();
+        let full_obs = self.get_obs_space(0, shared_info);
         for current_car in &state.cars {
             let mut obs_vec: Vec<f32> = Vec::with_capacity(full_obs);
             obs_vec.extend(&ball_obs);
 
             // current car's obs
-            obs_vec.extend(&cars.iter().find(|(car_id, _, _)| *car_id == current_car.id).unwrap().2);
+            obs_vec.extend(
+                &cars
+                    .iter()
+                    .find(|(car_id, _, _)| *car_id == current_car.id)
+                    .unwrap()
+                    .2,
+            );
 
             // teammate's obs
             let mut num_teammates = 0;
@@ -125,7 +129,7 @@ impl Obs<SharedInfo> for MyObs {
             }
 
             assert_eq!(obs_vec.len(), full_obs);
-            obs.push((current_car.id, obs_vec));
+            obs.push(obs_vec);
         }
 
         obs
@@ -170,7 +174,13 @@ impl Default for MyAction {
 }
 
 impl Action<SharedInfo> for MyAction {
-    fn get_action_space(&self, _agent_id: u32, _shared_info: &mut SharedInfo) -> usize {
+    type Input = Vec<i32>;
+
+    fn get_tick_skip() -> u32 {
+        8
+    }
+
+    fn get_action_space(&self, _agent_id: u32, _shared_info: &SharedInfo) -> usize {
         self.actions_table.len()
     }
 
@@ -178,16 +188,13 @@ impl Action<SharedInfo> for MyAction {
 
     fn parse_actions(
         &mut self,
-        actions: &[Vec<f32>],
+        actions: Vec<i32>,
         _state: &GameStateA,
         _shared_info: &mut SharedInfo,
     ) -> Vec<CarControls> {
         actions
             .iter()
-            .map(|action| {
-                let action_idx = action[0] as usize;
-                self.actions_table[action_idx]
-            })
+            .map(|action| self.actions_table[*action as usize])
             .collect()
     }
 }
@@ -255,6 +262,16 @@ impl Terminal<SharedInfo> for MyTerminal {
     }
 }
 
+struct MyTruncate;
+
+impl Truncate<SharedInfo> for MyTruncate {
+    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+
+    fn should_truncate(&mut self, _state: &GameStateA, _shared_info: &mut SharedInfo) -> bool {
+        false
+    }
+}
+
 fn main() {
     init(None, true);
 
@@ -270,28 +287,28 @@ fn main() {
         MyAction::default(),
         CombinedReward::new(vec![Box::new(DistanceToBallReward)]),
         MyTerminal,
+        MyTruncate,
         SharedInfo::default(),
     );
 
     let mut obs = env.reset();
     let mut is_terminal = false;
+    let mut truncated = false;
 
     let max_steps = 200_000;
     let start_time = Instant::now();
 
     for _ in 0..max_steps {
-        if is_terminal {
+        if is_terminal || truncated {
             obs = env.reset();
-            is_terminal = false;
         }
 
-        let actions = (0..env.num_cars())
-            .map(|_| vec![fastrand::f32() * 24.])
-            .collect::<Vec<_>>();
+        let actions = obs.iter().map(|_| fastrand::i32(0..24)).collect::<Vec<_>>();
 
-        let result = env.step(actions, 8);
+        let result = env.step(actions);
         obs = result.obs;
         is_terminal = result.is_terminal;
+        truncated = result.truncated;
     }
 
     let end_time = Instant::now();
