@@ -1,4 +1,6 @@
-use rlgym_rs::{Action, Env, FullObs, Obs, Reward, StateSetter, Terminal, Truncate};
+use rlgym_rs::{
+    Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
+};
 use rocketsim_rs::{
     cxx::UniquePtr,
     glam_ext::{BallA, CarInfoA, GameStateA},
@@ -17,6 +19,13 @@ impl Default for SharedInfo {
             rng: fastrand::Rng::new(),
         }
     }
+}
+
+struct MySharedInfoProvider;
+
+impl SharedInfoProvider<SharedInfo> for MySharedInfoProvider {
+    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn apply(&mut self, _game_state: &GameStateA, _shared_info: &mut SharedInfo) {}
 }
 
 struct MyStateSetter;
@@ -283,6 +292,7 @@ fn main() {
     let mut env = Env::new(
         arena,
         MyStateSetter,
+        MySharedInfoProvider,
         MyObs::default(),
         MyAction::default(),
         CombinedReward::new(vec![Box::new(DistanceToBallReward)]),

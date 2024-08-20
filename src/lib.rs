@@ -17,9 +17,10 @@ pub struct StepResult {
     pub state: Rc<GameStateA>,
 }
 
-pub struct Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
+pub struct Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
 where
     SS: StateSetter<SI>,
+    SIP: SharedInfoProvider<SI>,
     OBS: Obs<SI>,
     ACT: Action<SI>,
     REW: Reward<SI>,
@@ -28,6 +29,7 @@ where
 {
     arena: UniquePtr<Arena>,
     state_setter: SS,
+    shared_info_provider: SIP,
     observations: OBS,
     action: ACT,
     reward: REW,
@@ -38,9 +40,10 @@ where
     last_state: Option<Rc<GameStateA>>,
 }
 
-impl<SS, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
+impl<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
 where
     SS: StateSetter<SI>,
+    SIP: SharedInfoProvider<SI>,
     OBS: Obs<SI>,
     ACT: Action<SI>,
     REW: Reward<SI>,
@@ -51,6 +54,7 @@ where
     pub fn new(
         arena: UniquePtr<Arena>,
         state_setter: SS,
+        shared_info_provider: SIP,
         observations: OBS,
         action: ACT,
         reward: REW,
@@ -61,6 +65,7 @@ where
         Self {
             arena,
             state_setter,
+            shared_info_provider,
             observations,
             action,
             reward,
@@ -84,12 +89,18 @@ where
         self.arena.num_cars()
     }
 
+    pub fn shared_info(&self) -> &SI {
+        &self.shared_info
+    }
+
     /// returns next obs
     pub fn reset(&mut self) -> Rc<FullObs> {
         self.state_setter
             .apply(&mut self.arena, &mut self.shared_info);
 
         let state = self.arena.pin_mut().get_game_state().to_glam();
+        self.shared_info_provider
+            .reset(&state, &mut self.shared_info);
         self.observations.reset(&state, &mut self.shared_info);
         self.action.reset(&state, &mut self.shared_info);
         self.terminal.reset(&state, &mut self.shared_info);
@@ -119,14 +130,12 @@ where
         self.arena.pin_mut().step(self.tick_skip);
 
         let state = Rc::new(self.arena.pin_mut().get_game_state().to_glam());
-        let obs = self
-            .observations
-            .build_obs(last_state, &mut self.shared_info);
-        let rewards = self.reward.get_rewards(last_state, &mut self.shared_info);
-        let is_terminal = self.terminal.is_terminal(last_state, &mut self.shared_info);
-        let truncated = self
-            .truncate
-            .should_truncate(last_state, &mut self.shared_info);
+        self.shared_info_provider
+            .apply(&state, &mut self.shared_info);
+        let obs = self.observations.build_obs(&state, &mut self.shared_info);
+        let rewards = self.reward.get_rewards(&state, &mut self.shared_info);
+        let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
+        let truncated = self.truncate.should_truncate(&state, &mut self.shared_info);
 
         self.last_state = Some(state.clone());
 
@@ -138,6 +147,11 @@ where
             state,
         }
     }
+}
+
+pub trait SharedInfoProvider<SI> {
+    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
+    fn apply(&mut self, game_state: &GameStateA, shared_info: &mut SI);
 }
 
 pub trait StateSetter<SI> {
