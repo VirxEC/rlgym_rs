@@ -7,7 +7,10 @@ use rocketsim_rs::{
     init,
     sim::{Arena, CarConfig, CarControls, Team},
 };
-use std::time::Instant;
+use std::{
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 struct SharedInfo {
     rng: fastrand::Rng,
@@ -284,6 +287,8 @@ impl Truncate<SharedInfo> for MyTruncate {
 fn main() {
     init(None, true);
 
+    let render = true;
+
     let mut arena = Arena::default_standard();
     arena
         .pin_mut()
@@ -302,28 +307,43 @@ fn main() {
     );
 
     let mut obs = env.reset();
-    let mut is_terminal = false;
-    let mut truncated = false;
 
-    let max_steps = 200_000;
-    let start_time = Instant::now();
-
-    for _ in 0..max_steps {
-        if is_terminal || truncated {
-            obs = env.reset();
-        }
-
-        let actions = obs.iter().map(|_| fastrand::i32(0..24)).collect::<Vec<_>>();
-
-        let result = env.step(actions);
-        obs = result.obs;
-        is_terminal = result.is_terminal;
-        truncated = result.truncated;
+    if render {
+        // this only needs to be called once
+        env.enable_rendering();
     }
 
-    let end_time = Instant::now();
-    let elapsed = end_time - start_time;
-    println!("Elapsed: {:?}", elapsed);
-    // print sps
-    println!("SPS: {}", max_steps as f64 / elapsed.as_secs_f64());
+    // extra render stuff
+    // this method ensures no game speed slowdowns
+    // and no weirdness from different game speeds
+    let mut tick_rate = Duration::from_secs_f32(MyAction::get_tick_skip() as f32 / 120.);
+    let mut next_time = Instant::now() + tick_rate;
+
+    loop {
+        // random actions
+        let actions = obs.iter().map(|_| fastrand::i32(0..24)).collect::<Vec<_>>();
+
+        if !render || !env.is_paused() {
+            let result = env.step(actions);
+
+            if result.is_terminal || result.truncated {
+                obs = env.reset();
+            } else {
+                obs = result.obs;
+            }
+        }
+
+        if render {
+            // check for state settings requests
+            // also sets the requested game speed & pause state
+            env.handle_incoming_states(&mut tick_rate).unwrap();
+
+            // ensure we only run at the requested game speed
+            let wait_time = next_time - Instant::now();
+            if wait_time > Duration::default() {
+                sleep(wait_time);
+            }
+            next_time += tick_rate;
+        }
+    }
 }

@@ -1,11 +1,14 @@
+use render::RLViserSocketHandler;
 pub use rocketsim_rs;
+
+mod render;
 
 use rocketsim_rs::{
     cxx::UniquePtr,
     glam_ext::GameStateA,
     sim::{Arena, CarControls},
 };
-use std::rc::Rc;
+use std::{io, rc::Rc, time::Duration};
 
 pub type FullObs = Vec<Vec<f32>>;
 
@@ -38,6 +41,7 @@ where
     shared_info: SI,
     tick_skip: u32,
     last_state: Option<Rc<GameStateA>>,
+    renderer: Option<RLViserSocketHandler>,
 }
 
 impl<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
@@ -74,6 +78,36 @@ where
             shared_info,
             tick_skip: ACT::get_tick_skip(),
             last_state: None,
+            renderer: None,
+        }
+    }
+
+    /// Call at any time to open RLViser and start rendering the environment
+    pub fn enable_rendering(&mut self) {
+        self.renderer = Some(RLViserSocketHandler::new().unwrap());
+    }
+
+    /// Check if the game should be paused
+    pub fn is_paused(&self) -> bool {
+        self.renderer
+            .as_ref()
+            .map(RLViserSocketHandler::is_paused)
+            .unwrap_or_default()
+    }
+
+    /// Tick rate, by default, should be `Duration::from_secs_f32(TICK_SKIP as f32 / 120.)`
+    pub fn handle_incoming_states(&mut self, tick_rate: &mut Duration) -> io::Result<()> {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.handle_return_message(&mut self.arena, tick_rate, ACT::get_tick_skip())?;
+        }
+
+        Ok(())
+    }
+
+    /// Call at any time to close RLViser
+    pub fn stop_rendering(&mut self) {
+        if let Some(renderer) = self.renderer.take() {
+            renderer.quit().unwrap();
         }
     }
 
@@ -129,7 +163,13 @@ where
             .unwrap();
         self.arena.pin_mut().step(self.tick_skip);
 
-        let state = Rc::new(self.arena.pin_mut().get_game_state().to_glam());
+        let raw_state = self.arena.pin_mut().get_game_state();
+
+        if let Some(renderer) = &mut self.renderer {
+            renderer.send_state(&raw_state).unwrap();
+        }
+
+        let state = Rc::new(raw_state.to_glam());
         self.shared_info_provider
             .apply(&state, &mut self.shared_info);
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
