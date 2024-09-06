@@ -84,7 +84,9 @@ where
 
     /// Call at any time to open RLViser and start rendering the environment
     pub fn enable_rendering(&mut self) {
-        self.renderer = Some(RLViserSocketHandler::new().unwrap());
+        if self.renderer.is_none() {
+            self.renderer = Some(RLViserSocketHandler::new().unwrap());
+        }
     }
 
     /// Check if the game should be paused
