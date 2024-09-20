@@ -319,18 +319,36 @@ fn main() {
     let mut tick_rate = Duration::from_secs_f32(MyAction::get_tick_skip() as f32 / 120.);
     let mut next_time = Instant::now() + tick_rate;
 
+    let ticks_per_min = MyAction::get_tick_skip() as f32 / 120.0 / 60.0;
+    let start_time = Instant::now();
+    let mut prev_time = Instant::now();
+    let mut total_steps = 0;
+
     loop {
         // random actions
         let actions = obs.iter().map(|_| fastrand::i32(0..24)).collect::<Vec<_>>();
 
         if !render || !env.is_paused() {
             let result = env.step(actions);
+            total_steps += 1;
 
             if result.is_terminal || result.truncated {
                 obs = env.reset();
             } else {
                 obs = result.obs;
             }
+        }
+
+        if Instant::now() - prev_time > Duration::from_secs(5) {
+            let elapsed = (Instant::now() - start_time).as_secs_f32();
+            let steps_per_sec = total_steps as f32 / elapsed;
+            let min_per_sec = steps_per_sec * ticks_per_min;
+            println!(
+                "Steps: {}, Steps/s: {:.2}, Elapsed: {:.0}s, Simulated min/s: {:.3}",
+                total_steps, steps_per_sec, elapsed, min_per_sec
+            );
+
+            prev_time = Instant::now();
         }
 
         if render {
