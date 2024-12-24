@@ -83,9 +83,9 @@ where
     }
 
     /// Call at any time to open RLViser and start rendering the environment
-    pub fn enable_rendering(&mut self) {
+    pub fn enable_rendering(&mut self, try_launch_exe: bool) {
         if self.renderer.is_none() {
-            self.renderer = Some(RLViserSocketHandler::new().unwrap());
+            self.renderer = Some(RLViserSocketHandler::new(try_launch_exe).unwrap());
         }
     }
 

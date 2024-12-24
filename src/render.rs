@@ -60,10 +60,12 @@ pub struct RLViserSocketHandler {
 }
 
 impl RLViserSocketHandler {
-    pub fn new() -> io::Result<Self> {
-        // launch rlviser
-        if let Err(e) = Command::new(RLVISER_PATH).spawn() {
-            eprintln!("Failed to launch RLViser ({RLVISER_PATH}): {e}");
+    pub fn new(try_launch_exe: bool) -> io::Result<Self> {
+        if try_launch_exe {
+            // launch rlviser
+            if let Err(e) = Command::new(RLVISER_PATH).spawn() {
+                eprintln!("Failed to launch RLViser ({RLVISER_PATH}): {e}");
+            }
         }
 
         // open rlviser socket

@@ -310,7 +310,7 @@ fn main() {
 
     if render {
         // this only needs to be called once
-        env.enable_rendering();
+        env.enable_rendering(false);
     }
 
     // extra render stuff
