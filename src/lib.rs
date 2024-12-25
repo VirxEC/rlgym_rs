@@ -170,8 +170,14 @@ where
         if let Some(renderer) = &mut self.renderer {
             renderer.send_state(&raw_state).unwrap();
         }
-
+        
         let state = Rc::new(raw_state.to_glam());
+
+        // assert that the order of cars in state is the same as in mapped_actions
+        mapped_actions.into_iter().zip(&state.cars).for_each(|((car_id, _), car)| {
+            debug_assert_eq!(car.id, car_id);
+        });
+
         self.shared_info_provider
             .apply(&state, &mut self.shared_info);
         let obs = self.observations.build_obs(&state, &mut self.shared_info);

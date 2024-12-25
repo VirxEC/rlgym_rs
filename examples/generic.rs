@@ -1,4 +1,4 @@
-use rlgym_rs::{
+use rlgym::{
     Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
 };
 use rocketsim_rs::{
