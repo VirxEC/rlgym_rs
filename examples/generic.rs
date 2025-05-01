@@ -53,7 +53,7 @@ impl MyObs {
     const ZERO_PADDING: usize = 1;
     const BALL_OBS: usize = 9;
     const CAR_OBS: usize = 9;
-    
+
     const OBS_SPACE: usize = Self::BALL_OBS + Self::CAR_OBS * Self::ZERO_PADDING * 2;
 
     fn get_ball_obs(ball: &BallA) -> Vec<f32> {

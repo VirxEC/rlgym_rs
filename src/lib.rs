@@ -1,8 +1,8 @@
-use render::RLViserSocketHandler;
 pub use rocketsim_rs;
 
 mod render;
 
+use render::RLViserSocketHandler;
 use rocketsim_rs::{
     cxx::UniquePtr,
     glam_ext::GameStateA,
