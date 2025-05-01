@@ -1,3 +1,4 @@
+use rand::{Rng, rngs::ThreadRng};
 use rlgym::{
     Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
 };
@@ -13,14 +14,12 @@ use std::{
 };
 
 struct SharedInfo {
-    rng: fastrand::Rng,
+    rng: ThreadRng,
 }
 
 impl Default for SharedInfo {
     fn default() -> Self {
-        Self {
-            rng: fastrand::Rng::new(),
-        }
+        Self { rng: rand::rng() }
     }
 }
 
@@ -44,21 +43,14 @@ impl StateSetter<SharedInfo> for MyStateSetter {
 
         arena
             .pin_mut()
-            .reset_to_random_kickoff(Some(shared_info.rng.i32(-1000..1000)));
+            .reset_to_random_kickoff(Some(shared_info.rng.random_range(-1000..1000)));
     }
 }
 
-struct MyObs {
-    zero_padding: usize,
-}
-
-impl Default for MyObs {
-    fn default() -> Self {
-        Self { zero_padding: 1 }
-    }
-}
+struct MyObs;
 
 impl MyObs {
+    const ZERO_PADDING: usize = 1;
     const BALL_OBS: usize = 9;
     const CAR_OBS: usize = 9;
 
@@ -86,8 +78,8 @@ impl MyObs {
 }
 
 impl Obs<SharedInfo> for MyObs {
-    fn get_obs_space(&self, _agent_id: u32, _shared_info: &SharedInfo) -> usize {
-        Self::BALL_OBS + Self::CAR_OBS * self.zero_padding * 2
+    fn get_obs_space(&self, _shared_info: &SharedInfo) -> usize {
+        const { Self::BALL_OBS + Self::CAR_OBS * Self::ZERO_PADDING * 2 }
     }
 
     fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
@@ -98,7 +90,7 @@ impl Obs<SharedInfo> for MyObs {
         let ball_obs = Self::get_ball_obs(&state.ball);
         let cars = Self::get_all_car_obs(&state.cars);
 
-        let full_obs = self.get_obs_space(0, shared_info);
+        let full_obs = self.get_obs_space(shared_info);
         for current_car in &state.cars {
             let mut obs_vec: Vec<f32> = Vec::with_capacity(full_obs);
             obs_vec.extend(&ball_obs);
@@ -122,7 +114,7 @@ impl Obs<SharedInfo> for MyObs {
             }
 
             // zero padding
-            for _ in 0..self.zero_padding - num_teammates - 1 {
+            for _ in 0..Self::ZERO_PADDING - num_teammates - 1 {
                 obs_vec.extend(vec![0.0; Self::CAR_OBS]);
             }
 
@@ -136,7 +128,7 @@ impl Obs<SharedInfo> for MyObs {
             }
 
             // zero padding
-            for _ in 0..self.zero_padding - num_opponents {
+            for _ in 0..Self::ZERO_PADDING - num_opponents {
                 obs_vec.extend(vec![0.0; Self::CAR_OBS]);
             }
 
@@ -150,6 +142,7 @@ impl Obs<SharedInfo> for MyObs {
 
 struct MyAction {
     actions_table: Vec<CarControls>,
+    action_buffer: [(u32, CarControls); 8],
 }
 
 impl Default for MyAction {
@@ -181,18 +174,21 @@ impl Default for MyAction {
 
         dbg!(actions_table.len());
 
-        Self { actions_table }
+        Self {
+            actions_table,
+            action_buffer: Default::default(),
+        }
     }
 }
 
 impl Action<SharedInfo> for MyAction {
-    type Input = Vec<i32>;
+    type Input = usize;
 
     fn get_tick_skip() -> u32 {
         8
     }
 
-    fn get_action_space(&self, _agent_id: u32, _shared_info: &SharedInfo) -> usize {
+    fn get_action_space(&self, _shared_info: &SharedInfo) -> usize {
         self.actions_table.len()
     }
 
@@ -200,14 +196,15 @@ impl Action<SharedInfo> for MyAction {
 
     fn parse_actions(
         &mut self,
-        actions: Vec<i32>,
-        _state: &GameStateA,
+        actions: &[usize],
+        state: &GameStateA,
         _shared_info: &mut SharedInfo,
-    ) -> Vec<CarControls> {
-        actions
-            .iter()
-            .map(|action| self.actions_table[*action as usize])
-            .collect()
+    ) -> &[(u32, CarControls)] {
+        for ((buf, car), action) in self.action_buffer.iter_mut().zip(&state.cars).zip(actions) {
+            *buf = (car.id, self.actions_table[*action]);
+        }
+
+        &self.action_buffer[..state.cars.len()]
     }
 }
 
@@ -287,7 +284,7 @@ impl Truncate<SharedInfo> for MyTruncate {
 fn main() {
     init(None, true);
 
-    let render = true;
+    let render = false;
 
     let mut arena = Arena::default_standard();
     arena
@@ -298,7 +295,7 @@ fn main() {
         arena,
         MyStateSetter,
         MySharedInfoProvider,
-        MyObs::default(),
+        MyObs,
         MyAction::default(),
         CombinedReward::new(vec![Box::new(DistanceToBallReward)]),
         MyTerminal,
@@ -306,7 +303,7 @@ fn main() {
         SharedInfo::default(),
     );
 
-    let mut obs = env.reset();
+    let (mut state, mut obs) = env.reset();
 
     if render {
         // this only needs to be called once
@@ -324,18 +321,20 @@ fn main() {
     let mut prev_time = Instant::now();
     let mut total_steps = 0;
 
+    let mut rng = rand::rng();
     loop {
         // random actions
-        let actions = obs.iter().map(|_| fastrand::i32(0..24)).collect::<Vec<_>>();
+        let actions = vec![rng.random_range(0..24); obs.len()];
 
         if !render || !env.is_paused() {
-            let result = env.step(actions);
+            let result = env.step(&state, &actions);
             total_steps += 1;
 
             if result.is_terminal || result.truncated {
-                obs = env.reset();
+                (state, obs) = env.reset();
             } else {
                 obs = result.obs;
+                state = result.state;
             }
         }
 

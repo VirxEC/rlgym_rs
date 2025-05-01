@@ -8,7 +8,7 @@ rust-version = "1.85"
 rocketsim_rs = { version = "0.34.0", features = ["glam"] }
 
 [dev-dependencies]
-fastrand = "2.1.0"
+rand = "0.9.1"
 
 [profile.release]
 lto = true

@@ -1,8 +1,8 @@
 use rocketsim_rs::{
+    GameState,
     bytes::{FromBytes, FromBytesExact, ToBytes},
     cxx::UniquePtr,
     sim::Arena,
-    GameState,
 };
 use std::{
     io,

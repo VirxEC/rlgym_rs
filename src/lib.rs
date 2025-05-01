@@ -8,16 +8,16 @@ use rocketsim_rs::{
     glam_ext::GameStateA,
     sim::{Arena, CarControls},
 };
-use std::{io, rc::Rc, time::Duration};
+use std::{io, time::Duration};
 
 pub type FullObs = Vec<Vec<f32>>;
 
 pub struct StepResult {
-    pub obs: Rc<FullObs>,
+    pub obs: FullObs,
     pub rewards: Vec<f32>,
     pub is_terminal: bool,
     pub truncated: bool,
-    pub state: Rc<GameStateA>,
+    pub state: GameStateA,
 }
 
 pub struct Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
@@ -40,7 +40,6 @@ where
     truncate: TRUNC,
     shared_info: SI,
     tick_skip: u32,
-    last_state: Option<Rc<GameStateA>>,
     renderer: Option<RLViserSocketHandler>,
 }
 
@@ -77,7 +76,6 @@ where
             truncate,
             shared_info,
             tick_skip: ACT::get_tick_skip(),
-            last_state: None,
             renderer: None,
         }
     }
@@ -113,12 +111,12 @@ where
         }
     }
 
-    pub fn get_obs_space(&self, agent_id: u32) -> usize {
-        self.observations.get_obs_space(agent_id, &self.shared_info)
+    pub fn get_obs_space(&self) -> usize {
+        self.observations.get_obs_space(&self.shared_info)
     }
 
-    pub fn get_action_space(&self, agent_id: u32) -> usize {
-        self.action.get_action_space(agent_id, &self.shared_info)
+    pub fn get_action_space(&self) -> usize {
+        self.action.get_action_space(&self.shared_info)
     }
 
     pub fn num_cars(&self) -> usize {
@@ -130,7 +128,7 @@ where
     }
 
     /// returns next obs
-    pub fn reset(&mut self) -> Rc<FullObs> {
+    pub fn reset(&mut self) -> (GameStateA, FullObs) {
         self.state_setter
             .apply(&mut self.arena, &mut self.shared_info);
 
@@ -143,25 +141,18 @@ where
         self.reward.reset(&state, &mut self.shared_info);
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
-        self.last_state = Some(Rc::new(state));
 
-        Rc::new(obs)
+        (state, obs)
     }
 
-    pub fn step(&mut self, raw_actions: ACT::Input) -> StepResult {
-        let last_state = self.last_state.as_ref().expect("Must call reset() first!");
+    pub fn step(&mut self, initial_state: &GameStateA, raw_actions: &[ACT::Input]) -> StepResult {
         let parsed_actions =
             self.action
-                .parse_actions(raw_actions, last_state, &mut self.shared_info);
-        let mapped_actions = parsed_actions
-            .into_iter()
-            .enumerate()
-            .map(|(i, controls)| (last_state.cars[i].id, controls))
-            .collect::<Vec<_>>();
+                .parse_actions(raw_actions, initial_state, &mut self.shared_info);
 
         self.arena
             .pin_mut()
-            .set_all_controls(&mapped_actions)
+            .set_all_controls(parsed_actions)
             .unwrap();
         self.arena.pin_mut().step(self.tick_skip);
 
@@ -171,14 +162,15 @@ where
             renderer.send_state(&raw_state).unwrap();
         }
 
-        let state = Rc::new(raw_state.to_glam());
+        let state = raw_state.to_glam();
 
         // assert that the order of cars in state is the same as in mapped_actions
-        mapped_actions
-            .into_iter()
+        #[cfg(debug_assertions)]
+        parsed_actions
+            .iter()
             .zip(&state.cars)
             .for_each(|((car_id, _), car)| {
-                debug_assert_eq!(car.id, car_id);
+                assert_eq!(car.id, *car_id);
             });
 
         self.shared_info_provider
@@ -188,10 +180,8 @@ where
         let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
         let truncated = self.truncate.should_truncate(&state, &mut self.shared_info);
 
-        self.last_state = Some(state.clone());
-
         StepResult {
-            obs: Rc::new(obs),
+            obs,
             rewards,
             is_terminal,
             truncated,
@@ -210,7 +200,7 @@ pub trait StateSetter<SI> {
 }
 
 pub trait Obs<SI> {
-    fn get_obs_space(&self, agent_id: u32, shared_info: &SI) -> usize;
+    fn get_obs_space(&self, shared_info: &SI) -> usize;
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
     fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SI) -> FullObs;
 }
@@ -219,14 +209,14 @@ pub trait Action<SI> {
     type Input;
 
     fn get_tick_skip() -> u32;
-    fn get_action_space(&self, agent_id: u32, shared_info: &SI) -> usize;
+    fn get_action_space(&self, shared_info: &SI) -> usize;
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn parse_actions(
-        &mut self,
-        actions: Self::Input,
+    fn parse_actions<'a>(
+        &'a mut self,
+        actions: &[Self::Input],
         state: &GameStateA,
         shared_info: &mut SI,
-    ) -> Vec<CarControls>;
+    ) -> &'a [(u32, CarControls)];
 }
 
 pub trait Reward<SI> {
