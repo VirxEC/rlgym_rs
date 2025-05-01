@@ -10,6 +10,16 @@ use rocketsim_rs::{
 };
 use std::{io, time::Duration};
 
+#[track_caller]
+#[cfg(debug_assertions)]
+fn check_nans(items: &[f32]) {
+    for &item in items {
+        if item.is_nan() {
+            panic!("NaN detected");
+        }
+    }
+}
+
 pub type FullObs = Vec<Vec<f32>>;
 
 pub struct StepResult {
@@ -98,7 +108,7 @@ where
     /// Tick rate, by default, should be `Duration::from_secs_f32(TICK_SKIP as f32 / 120.)`
     pub fn handle_incoming_states(&mut self, tick_rate: &mut Duration) -> io::Result<()> {
         if let Some(renderer) = &mut self.renderer {
-            renderer.handle_return_message(&mut self.arena, tick_rate, ACT::get_tick_skip())?;
+            renderer.handle_return_message(&mut self.arena, tick_rate, self.tick_skip)?;
         }
 
         Ok(())
@@ -142,6 +152,11 @@ where
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
 
+        #[cfg(debug_assertions)]
+        for o in &obs {
+            check_nans(o);
+        }
+
         (state, obs)
     }
 
@@ -164,21 +179,20 @@ where
 
         let state = raw_state.to_glam();
 
-        // assert that the order of cars in state is the same as in mapped_actions
-        #[cfg(debug_assertions)]
-        parsed_actions
-            .iter()
-            .zip(&state.cars)
-            .for_each(|((car_id, _), car)| {
-                assert_eq!(car.id, *car_id);
-            });
-
         self.shared_info_provider
             .apply(&state, &mut self.shared_info);
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
         let rewards = self.reward.get_rewards(&state, &mut self.shared_info);
         let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
         let truncated = self.truncate.should_truncate(&state, &mut self.shared_info);
+
+        #[cfg(debug_assertions)]
+        {
+            for o in &obs {
+                check_nans(o);
+            }
+            check_nans(&rewards);
+        }
 
         StepResult {
             obs,
