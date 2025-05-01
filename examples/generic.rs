@@ -53,6 +53,8 @@ impl MyObs {
     const ZERO_PADDING: usize = 1;
     const BALL_OBS: usize = 9;
     const CAR_OBS: usize = 9;
+    
+    const OBS_SPACE: usize = Self::BALL_OBS + Self::CAR_OBS * Self::ZERO_PADDING * 2;
 
     fn get_ball_obs(ball: &BallA) -> Vec<f32> {
         let mut obs_vec = Vec::with_capacity(Self::BALL_OBS);
@@ -79,20 +81,19 @@ impl MyObs {
 
 impl Obs<SharedInfo> for MyObs {
     fn get_obs_space(&self, _shared_info: &SharedInfo) -> usize {
-        const { Self::BALL_OBS + Self::CAR_OBS * Self::ZERO_PADDING * 2 }
+        Self::OBS_SPACE
     }
 
     fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
 
-    fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SharedInfo) -> FullObs {
+    fn build_obs(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> FullObs {
         let mut obs = Vec::with_capacity(state.cars.len());
 
         let ball_obs = Self::get_ball_obs(&state.ball);
         let cars = Self::get_all_car_obs(&state.cars);
 
-        let full_obs = self.get_obs_space(shared_info);
         for current_car in &state.cars {
-            let mut obs_vec: Vec<f32> = Vec::with_capacity(full_obs);
+            let mut obs_vec: Vec<f32> = Vec::with_capacity(Self::OBS_SPACE);
             obs_vec.extend(&ball_obs);
 
             // current car's obs
@@ -132,7 +133,7 @@ impl Obs<SharedInfo> for MyObs {
                 obs_vec.extend(vec![0.0; Self::CAR_OBS]);
             }
 
-            assert_eq!(obs_vec.len(), full_obs);
+            assert_eq!(obs_vec.len(), Self::OBS_SPACE);
             obs.push(obs_vec);
         }
 
@@ -254,16 +255,21 @@ impl Reward<SharedInfo> for DistanceToBallReward {
     }
 }
 
-struct MyTerminal;
+#[derive(Default)]
+struct MyTerminal {
+    episode_duration: f32,
+}
 
 impl Terminal<SharedInfo> for MyTerminal {
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn reset(&mut self, _initial_state: &GameStateA, shared_info: &mut SharedInfo) {
+        self.episode_duration = shared_info.rng.random_range(0.0..5.0);
+    }
 
     fn is_terminal(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> bool {
-        // reset after 5 minutes
         let elapsed = state.tick_count as f32 / state.tick_rate / 60.0;
 
-        if elapsed < 5.0 {
+        // reset after some minutes
+        if elapsed < self.episode_duration {
             return false;
         }
 
@@ -298,7 +304,7 @@ fn main() {
         MyObs,
         MyAction::default(),
         CombinedReward::new(vec![Box::new(DistanceToBallReward)]),
-        MyTerminal,
+        MyTerminal::default(),
         MyTruncate,
         SharedInfo::default(),
     );
