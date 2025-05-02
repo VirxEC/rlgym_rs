@@ -1,4 +1,5 @@
 pub use rocketsim_rs;
+pub use rocketsim_rs::glam_ext::glam;
 
 mod render;
 
@@ -133,8 +134,12 @@ where
         self.arena.num_cars()
     }
 
-    pub fn shared_info(&self) -> &SI {
+    pub fn get_shared_info(&self) -> &SI {
         &self.shared_info
+    }
+
+    pub fn get_mut_shared_info(&mut self) -> &mut SI {
+        &mut self.shared_info
     }
 
     /// returns next obs
@@ -229,7 +234,7 @@ pub trait Action<SI> {
         &'a mut self,
         actions: &[Self::Input],
         state: &GameStateA,
-        shared_info: &mut SI,
+        shared_info: &'a mut SI,
     ) -> &'a [(u32, CarControls)];
 }
 
