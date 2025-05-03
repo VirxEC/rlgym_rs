@@ -43,7 +43,14 @@ impl StateSetter<SharedInfo> for MyStateSetter {
 
         arena
             .pin_mut()
-            .reset_to_random_kickoff(Some(shared_info.rng.random_range(-1000..1000)));
+            .reset_to_random_kickoff(Some(shared_info.rng.random()));
+
+        arena.pin_mut().set_goal_scored_callback(
+            |arena, _, _| {
+                arena.reset_to_random_kickoff(None);
+            },
+            0,
+        );
     }
 }
 

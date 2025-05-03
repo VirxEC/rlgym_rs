@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-rocketsim_rs = { version = "0.34.0", features = ["glam"] }
+rocketsim_rs = { version = "0.35.0", features = ["glam"] }
 
 [dev-dependencies]
 rand = "0.9.1"
