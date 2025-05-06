@@ -11,16 +11,6 @@ use rocketsim_rs::{
 };
 use std::{io, time::Duration};
 
-#[track_caller]
-#[cfg(debug_assertions)]
-fn check_nans(items: &[f32]) {
-    for &item in items {
-        if item.is_nan() {
-            panic!("NaN detected");
-        }
-    }
-}
-
 pub type FullObs = Vec<Vec<f32>>;
 
 pub struct StepResult {
@@ -156,11 +146,10 @@ where
         self.reward.reset(&state, &mut self.shared_info);
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
-
-        #[cfg(debug_assertions)]
-        for o in &obs {
-            check_nans(o);
-        }
+        debug_assert!(
+            !obs.iter().any(|a| a.iter().copied().any(f32::is_nan)),
+            "NaN in obs: {obs:?}"
+        );
 
         (state, obs)
     }
@@ -191,13 +180,14 @@ where
         let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
         let truncated = self.truncate.should_truncate(&state, &mut self.shared_info);
 
-        #[cfg(debug_assertions)]
-        {
-            for o in &obs {
-                check_nans(o);
-            }
-            check_nans(&rewards);
-        }
+        debug_assert!(
+            !obs.iter().any(|a| a.iter().copied().any(f32::is_nan)),
+            "NaN in obs: {obs:?}"
+        );
+        debug_assert!(
+            !rewards.iter().copied().any(f32::is_nan),
+            "NaN in rewards: {rewards:?}"
+        );
 
         StepResult {
             obs,
