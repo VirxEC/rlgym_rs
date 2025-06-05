@@ -143,6 +143,7 @@ where
         self.observations.reset(&state, &mut self.shared_info);
         self.action.reset(&state, &mut self.shared_info);
         self.terminal.reset(&state, &mut self.shared_info);
+        self.truncate.reset(&state, &mut self.shared_info);
         self.reward.reset(&state, &mut self.shared_info);
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
