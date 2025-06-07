@@ -1,3 +1,4 @@
+pub use crate::render::RenderingManager;
 pub use rocketsim_rs;
 pub use rocketsim_rs::glam_ext::glam;
 
@@ -190,6 +191,15 @@ where
             "NaN in rewards: {rewards:?}"
         );
 
+        if let Some(renderer) = &mut self.renderer {
+            self.shared_info_provider.render(
+                &mut renderer.rendering_manager,
+                &state,
+                &self.shared_info,
+            );
+            renderer.flush_render_buffer().unwrap();
+        }
+
         StepResult {
             obs,
             rewards,
@@ -203,6 +213,13 @@ where
 pub trait SharedInfoProvider<SI> {
     fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
     fn apply(&mut self, game_state: &GameStateA, shared_info: &mut SI);
+    fn render(
+        &mut self,
+        _rendering_manager: &mut RenderingManager,
+        _game_state: &GameStateA,
+        _shared_info: &SI,
+    ) {
+    }
 }
 
 pub trait StateSetter<SI> {

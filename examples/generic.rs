@@ -9,8 +9,7 @@ use rocketsim_rs::{
     sim::{Arena, CarConfig, CarControls, Team},
 };
 use std::{
-    thread::sleep,
-    time::{Duration, Instant},
+    iter::repeat_n, thread::sleep, time::{Duration, Instant}
 };
 
 struct SharedInfo {
@@ -123,7 +122,7 @@ impl Obs<SharedInfo> for MyObs {
 
             // zero padding
             for _ in 0..Self::ZERO_PADDING - num_teammates - 1 {
-                obs_vec.extend(vec![0.0; Self::CAR_OBS]);
+                obs_vec.extend(repeat_n(0.0, Self::CAR_OBS));
             }
 
             // opponent's obs
@@ -137,7 +136,7 @@ impl Obs<SharedInfo> for MyObs {
 
             // zero padding
             for _ in 0..Self::ZERO_PADDING - num_opponents {
-                obs_vec.extend(vec![0.0; Self::CAR_OBS]);
+                obs_vec.extend(repeat_n(0.0, Self::CAR_OBS));
             }
 
             assert_eq!(obs_vec.len(), Self::OBS_SPACE);

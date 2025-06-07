@@ -1,10 +1,13 @@
+use ahash::{AHashSet, AHasher};
 use rocketsim_rs::{
     GameState,
     bytes::{FromBytes, FromBytesExact, ToBytes},
     cxx::UniquePtr,
+    render::{Render, RenderMessage},
     sim::Arena,
 };
 use std::{
+    hash::{Hash, Hasher},
     io,
     net::{IpAddr, SocketAddr, UdpSocket},
     process::Command,
@@ -51,12 +54,55 @@ impl From<u8> for UdpPacketTypes {
     }
 }
 
+#[derive(Default)]
+pub struct RenderingManager {
+    renders: AHashSet<i32>,
+    render_buffer: Vec<RenderMessage>,
+}
+
+impl RenderingManager {
+    fn reduce_hash(hash: u64) -> u32 {
+        let upper = (hash >> 32) as u32;
+        let lower = hash as u32;
+        upper ^ lower
+    }
+
+    pub fn add_renders(&mut self, id: &str, render: Vec<Render>) {
+        let mut hasher = AHasher::default();
+        id.hash(&mut hasher);
+        let id = Self::reduce_hash(hasher.finish()) as i32;
+
+        self.renders.insert(id);
+        self.render_buffer
+            .push(RenderMessage::AddRender(id, render));
+    }
+
+    pub fn remove_renders(&mut self, id: &str) {
+        let mut hasher = AHasher::default();
+        id.hash(&mut hasher);
+        let id = Self::reduce_hash(hasher.finish()) as i32;
+
+        if self.renders.remove(&id) {
+            self.render_buffer.push(RenderMessage::RemoveRender(id));
+        }
+    }
+
+    pub fn remove_all_renders(&mut self) {
+        for &id in &self.renders {
+            self.render_buffer.push(RenderMessage::RemoveRender(id));
+        }
+
+        self.renders.clear();
+    }
+}
+
 pub struct RLViserSocketHandler {
     socket: UdpSocket,
     rlviser_addr: SocketAddr,
     min_game_state_buf: [u8; GameState::MIN_NUM_BYTES],
     game_state_buffer: Vec<u8>,
     paused: bool,
+    pub rendering_manager: RenderingManager,
 }
 
 impl RLViserSocketHandler {
@@ -90,6 +136,7 @@ impl RLViserSocketHandler {
             min_game_state_buf: [0; GameState::MIN_NUM_BYTES],
             game_state_buffer: Vec::new(),
             paused: false,
+            rendering_manager: RenderingManager::default(),
         })
     }
 
@@ -102,6 +149,23 @@ impl RLViserSocketHandler {
             .send_to(&[UdpPacketTypes::GameState as u8], self.rlviser_addr)?;
         self.socket
             .send_to(&game_state.to_bytes(), self.rlviser_addr)?;
+
+        Ok(())
+    }
+
+    pub fn flush_render_buffer(&mut self) -> io::Result<()> {
+        if self.rendering_manager.render_buffer.is_empty() {
+            return Ok(());
+        }
+
+        for render_message in &self.rendering_manager.render_buffer {
+            self.socket
+                .send_to(&[UdpPacketTypes::Render as u8], self.rlviser_addr)?;
+            self.socket
+                .send_to(&render_message.to_bytes(), self.rlviser_addr)?;
+        }
+
+        self.rendering_manager.render_buffer.clear();
 
         Ok(())
     }
