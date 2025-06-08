@@ -195,7 +195,7 @@ where
             self.shared_info_provider.render(
                 &mut renderer.rendering_manager,
                 &state,
-                &self.shared_info,
+                &mut self.shared_info,
             );
             renderer.flush_render_buffer().unwrap();
         }
@@ -217,7 +217,7 @@ pub trait SharedInfoProvider<SI> {
         &mut self,
         _rendering_manager: &mut RenderingManager,
         _game_state: &GameStateA,
-        _shared_info: &SI,
+        _shared_info: &mut SI,
     ) {
     }
 }
