@@ -1,16 +1,5 @@
-pub use crate::render::RenderingManager;
-pub use rocketsim_rs;
-pub use rocketsim_rs::glam_ext::glam;
-
-mod render;
-
-use render::RLViserSocketHandler;
-use rocketsim_rs::{
-    cxx::UniquePtr,
-    glam_ext::GameStateA,
-    sim::{Arena, CarControls},
-};
-use std::{io, time::Duration};
+pub use rocketsim;
+use rocketsim::{Arena, ArenaState, CarControls};
 
 pub type FullObs = Vec<Vec<f32>>;
 
@@ -19,47 +8,43 @@ pub struct StepResult {
     pub rewards: Vec<f32>,
     pub is_terminal: bool,
     pub truncated: bool,
-    pub state: GameStateA,
+    pub state: ArenaState,
 }
 
-pub struct Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
+pub struct Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
 where
     SS: StateSetter<SI>,
-    SIP: SharedInfoProvider<SI>,
     OBS: Obs<SI>,
     ACT: Action<SI>,
     REW: Reward<SI>,
     TERM: Terminal<SI>,
     TRUNC: Truncate<SI>,
 {
-    arena: UniquePtr<Arena>,
+    arena: Arena,
     state_setter: SS,
-    shared_info_provider: SIP,
     observations: OBS,
     action: ACT,
     reward: REW,
     terminal: TERM,
     truncate: TRUNC,
     shared_info: SI,
-    tick_skip: u32,
-    renderer: Option<RLViserSocketHandler>,
+    tick_skip: u8,
 }
 
-impl<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, SIP, OBS, ACT, REW, TERM, TRUNC, SI>
+impl<SS, OBS, ACT, REW, TERM, TRUNC, SI> Env<SS, OBS, ACT, REW, TERM, TRUNC, SI>
 where
     SS: StateSetter<SI>,
-    SIP: SharedInfoProvider<SI>,
     OBS: Obs<SI>,
     ACT: Action<SI>,
     REW: Reward<SI>,
     TERM: Terminal<SI>,
     TRUNC: Truncate<SI>,
+    SI: SharedInfoProvider,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        arena: UniquePtr<Arena>,
+        arena: Arena,
         state_setter: SS,
-        shared_info_provider: SIP,
         observations: OBS,
         action: ACT,
         reward: REW,
@@ -70,7 +55,6 @@ where
         Self {
             arena,
             state_setter,
-            shared_info_provider,
             observations,
             action,
             reward,
@@ -78,38 +62,6 @@ where
             truncate,
             shared_info,
             tick_skip: ACT::get_tick_skip(),
-            renderer: None,
-        }
-    }
-
-    /// Call at any time to open RLViser and start rendering the environment
-    pub fn enable_rendering(&mut self, try_launch_exe: bool) {
-        if self.renderer.is_none() {
-            self.renderer = Some(RLViserSocketHandler::new(try_launch_exe).unwrap());
-        }
-    }
-
-    /// Check if the game should be paused
-    pub fn is_paused(&self) -> bool {
-        self.renderer
-            .as_ref()
-            .map(RLViserSocketHandler::is_paused)
-            .unwrap_or_default()
-    }
-
-    /// Tick rate, by default, should be `Duration::from_secs_f32(TICK_SKIP as f32 / 120.)`
-    pub fn handle_incoming_states(&mut self, tick_rate: &mut Duration) -> io::Result<()> {
-        if let Some(renderer) = &mut self.renderer {
-            renderer.handle_return_message(&mut self.arena, tick_rate, self.tick_skip)?;
-        }
-
-        Ok(())
-    }
-
-    /// Call at any time to close RLViser
-    pub fn stop_rendering(&mut self) {
-        if let Some(renderer) = self.renderer.take() {
-            renderer.quit().unwrap();
         }
     }
 
@@ -134,13 +86,12 @@ where
     }
 
     /// returns next obs
-    pub fn reset(&mut self) -> (GameStateA, FullObs) {
+    pub fn reset(&mut self) -> (ArenaState, FullObs) {
         self.state_setter
             .apply(&mut self.arena, &mut self.shared_info);
 
-        let state = self.arena.pin_mut().get_game_state().to_glam();
-        self.shared_info_provider
-            .reset(&state, &mut self.shared_info);
+        let state = self.arena.get_arena_state();
+        self.shared_info.reset(&state);
         self.observations.reset(&state, &mut self.shared_info);
         self.action.reset(&state, &mut self.shared_info);
         self.terminal.reset(&state, &mut self.shared_info);
@@ -156,27 +107,32 @@ where
         (state, obs)
     }
 
-    pub fn step(&mut self, initial_state: &GameStateA, raw_actions: &[ACT::Input]) -> StepResult {
+    pub fn get_tick_skip(&self) -> u8 {
+        self.tick_skip
+    }
+
+    pub fn pre_step(
+        &mut self,
+        initial_state: &ArenaState,
+        raw_actions: &[<ACT as Action<SI>>::Input],
+    ) {
         let parsed_actions =
             self.action
                 .parse_actions(raw_actions, initial_state, &mut self.shared_info);
 
-        self.arena
-            .pin_mut()
-            .set_all_controls(parsed_actions)
-            .unwrap();
-        self.arena.pin_mut().step(self.tick_skip);
-
-        let raw_state = self.arena.pin_mut().get_game_state();
-
-        if let Some(renderer) = &mut self.renderer {
-            renderer.send_state(&raw_state).unwrap();
+        for (car_idx, action) in parsed_actions.iter().copied() {
+            self.arena.set_car_controls(car_idx, action);
         }
+    }
 
-        let state = raw_state.to_glam();
+    pub fn step_arena_one_tick(&mut self) {
+        self.arena.step_tick();
+    }
 
-        self.shared_info_provider
-            .apply(&state, &mut self.shared_info);
+    pub fn post_step(&mut self) -> StepResult {
+        let state = self.arena.get_arena_state();
+
+        self.shared_info.update(&state);
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
         let rewards = self.reward.get_rewards(&state, &mut self.shared_info);
         let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
@@ -191,15 +147,6 @@ where
             "NaN in rewards: {rewards:?}"
         );
 
-        if let Some(renderer) = &mut self.renderer {
-            self.shared_info_provider.render(
-                &mut renderer.rendering_manager,
-                &state,
-                &mut self.shared_info,
-            );
-            renderer.flush_render_buffer().unwrap();
-        }
-
         StepResult {
             obs,
             rewards,
@@ -208,55 +155,58 @@ where
             state,
         }
     }
-}
 
-pub trait SharedInfoProvider<SI> {
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn apply(&mut self, game_state: &GameStateA, shared_info: &mut SI);
-    fn render(
-        &mut self,
-        _rendering_manager: &mut RenderingManager,
-        _game_state: &GameStateA,
-        _shared_info: &mut SI,
-    ) {
+    pub fn step(&mut self, initial_state: &ArenaState, raw_actions: &[ACT::Input]) -> StepResult {
+        self.pre_step(initial_state, raw_actions);
+
+        for _ in 0..self.tick_skip {
+            self.step_arena_one_tick();
+        }
+
+        self.post_step()
     }
 }
 
+pub trait SharedInfoProvider {
+    fn reset(&mut self, initial_state: &ArenaState);
+    fn update(&mut self, game_state: &ArenaState);
+}
+
 pub trait StateSetter<SI> {
-    fn apply(&mut self, arena: &mut UniquePtr<Arena>, shared_info: &mut SI);
+    fn apply(&mut self, arena: &mut Arena, shared_info: &mut SI);
 }
 
 pub trait Obs<SI> {
     fn get_obs_space(&self, shared_info: &SI) -> usize;
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn build_obs(&mut self, state: &GameStateA, shared_info: &mut SI) -> FullObs;
+    fn reset(&mut self, initial_state: &ArenaState, shared_info: &mut SI);
+    fn build_obs(&mut self, state: &ArenaState, shared_info: &mut SI) -> FullObs;
 }
 
 pub trait Action<SI> {
     type Input;
 
-    fn get_tick_skip() -> u32;
+    fn get_tick_skip() -> u8;
     fn get_action_space(&self, shared_info: &SI) -> usize;
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
+    fn reset(&mut self, initial_state: &ArenaState, shared_info: &mut SI);
     fn parse_actions<'a>(
         &'a mut self,
         actions: &[Self::Input],
-        state: &GameStateA,
+        state: &ArenaState,
         shared_info: &'a mut SI,
-    ) -> &'a [(u32, CarControls)];
+    ) -> &'a [(usize, CarControls)];
 }
 
 pub trait Reward<SI> {
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn get_rewards(&mut self, state: &GameStateA, shared_info: &mut SI) -> Vec<f32>;
+    fn reset(&mut self, initial_state: &ArenaState, shared_info: &mut SI);
+    fn get_rewards(&mut self, state: &ArenaState, shared_info: &mut SI) -> Vec<f32>;
 }
 
 pub trait Terminal<SI> {
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn is_terminal(&mut self, state: &GameStateA, shared_info: &mut SI) -> bool;
+    fn reset(&mut self, initial_state: &ArenaState, shared_info: &mut SI);
+    fn is_terminal(&mut self, state: &ArenaState, shared_info: &mut SI) -> bool;
 }
 
 pub trait Truncate<SI> {
-    fn reset(&mut self, initial_state: &GameStateA, shared_info: &mut SI);
-    fn should_truncate(&mut self, state: &GameStateA, shared_info: &mut SI) -> bool;
+    fn reset(&mut self, initial_state: &ArenaState, shared_info: &mut SI);
+    fn should_truncate(&mut self, state: &ArenaState, shared_info: &mut SI) -> bool;
 }

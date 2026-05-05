@@ -1,68 +1,58 @@
-use rand::{Rng, rngs::ThreadRng};
+use std::{
+    iter::repeat_n,
+    thread::sleep,
+    time::{Duration, Instant},
+};
+
+use rand::{Rng, distr::Uniform, rngs::ThreadRng};
 use rlgym::{
     Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
-};
-use rocketsim_rs::{
-    cxx::UniquePtr,
-    glam_ext::{BallA, CarInfoA, GameStateA},
-    init,
-    sim::{Arena, CarConfig, CarControls, Team},
-};
-use std::{
-    iter::repeat_n, thread::sleep, time::{Duration, Instant}
+    rocketsim::{
+        Arena, ArenaState, BallState, CarBodyConfig, CarControls, CarInfo, CarState, GameMode,
+        Team, consts, init_from_default,
+    },
 };
 
 struct SharedInfo {
+    start_tick: u64,
     rng: ThreadRng,
 }
 
 impl Default for SharedInfo {
     fn default() -> Self {
-        Self { rng: rand::rng() }
+        Self {
+            start_tick: 0,
+            rng: rand::rng(),
+        }
     }
 }
 
-struct MySharedInfoProvider;
+impl SharedInfoProvider for SharedInfo {
+    fn reset(&mut self, initial_state: &ArenaState) {
+        self.start_tick = initial_state.tick_count;
+    }
 
-impl SharedInfoProvider<SharedInfo> for MySharedInfoProvider {
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
-    fn apply(&mut self, _game_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn update(&mut self, _game_state: &ArenaState) {}
 }
 
 struct MyStateSetter;
 
 impl StateSetter<SharedInfo> for MyStateSetter {
-    fn apply(&mut self, arena: &mut UniquePtr<Arena>, shared_info: &mut SharedInfo) {
-        arena.pin_mut().reset_tick_count();
-
-        if arena.num_cars() != 2 {
-            let _ = arena.pin_mut().add_car(Team::Blue, CarConfig::octane());
-            let _ = arena.pin_mut().add_car(Team::Orange, CarConfig::octane());
-        }
-
-        arena
-            .pin_mut()
-            .reset_to_random_kickoff(Some(shared_info.rng.random()));
-
-        arena.pin_mut().set_goal_scored_callback(
-            |arena, _, _| {
-                arena.reset_to_random_kickoff(None);
-            },
-            0,
-        );
+    fn apply(&mut self, arena: &mut Arena, shared_info: &mut SharedInfo) {
+        arena.reset_to_random_kickoff(Some(shared_info.rng.random()));
     }
 }
 
 struct MyObs;
 
 impl MyObs {
-    const ZERO_PADDING: usize = 1;
+    const ZERO_PADDING: usize = 2;
     const BALL_OBS: usize = 9;
     const CAR_OBS: usize = 9;
 
     const OBS_SPACE: usize = Self::BALL_OBS + Self::CAR_OBS * Self::ZERO_PADDING * 2;
 
-    fn get_ball_obs(ball: &BallA) -> Vec<f32> {
+    fn get_ball_obs(ball: &BallState) -> Vec<f32> {
         let mut obs_vec = Vec::with_capacity(Self::BALL_OBS);
         obs_vec.extend(ball.pos.to_array());
         obs_vec.extend(ball.vel.to_array());
@@ -71,15 +61,22 @@ impl MyObs {
         obs_vec
     }
 
-    fn get_all_car_obs(cars: &[CarInfoA]) -> Vec<(u32, Team, Vec<f32>)> {
-        cars.iter()
-            .map(|car| {
-                let mut obs_vec = Vec::with_capacity(Self::CAR_OBS);
-                obs_vec.extend(car.state.pos.to_array());
-                obs_vec.extend(car.state.vel.to_array());
-                obs_vec.extend(car.state.ang_vel.to_array());
+    fn get_all_car_obs(cars: &[(CarInfo, CarState)]) -> Vec<(usize, Team, Vec<f32>)> {
+        debug_assert!(
+            cars.len() <= Self::ZERO_PADDING * 2,
+            "Too many cars for obs space: {} > {}",
+            cars.len(),
+            Self::ZERO_PADDING * 2
+        );
 
-                (car.id, car.team, obs_vec)
+        cars.iter()
+            .map(|(info, state)| {
+                let mut obs_vec = Vec::with_capacity(Self::CAR_OBS);
+                obs_vec.extend(state.pos.to_array());
+                obs_vec.extend(state.vel.to_array());
+                obs_vec.extend(state.ang_vel.to_array());
+
+                (info.idx, info.team, obs_vec)
             })
             .collect()
     }
@@ -90,15 +87,15 @@ impl Obs<SharedInfo> for MyObs {
         Self::OBS_SPACE
     }
 
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
 
-    fn build_obs(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> FullObs {
-        let mut obs = Vec::with_capacity(state.cars.len());
+    fn build_obs(&mut self, state: &ArenaState, _shared_info: &mut SharedInfo) -> FullObs {
+        let mut obs = Vec::with_capacity(state.num_cars());
 
         let ball_obs = Self::get_ball_obs(&state.ball);
         let cars = Self::get_all_car_obs(&state.cars);
 
-        for current_car in &state.cars {
+        for (info, _) in &state.cars {
             let mut obs_vec: Vec<f32> = Vec::with_capacity(Self::OBS_SPACE);
             obs_vec.extend(&ball_obs);
 
@@ -106,7 +103,7 @@ impl Obs<SharedInfo> for MyObs {
             obs_vec.extend(
                 &cars
                     .iter()
-                    .find(|(car_id, _, _)| *car_id == current_car.id)
+                    .find(|(car_id, _, _)| *car_id == info.idx)
                     .unwrap()
                     .2,
             );
@@ -114,7 +111,7 @@ impl Obs<SharedInfo> for MyObs {
             // teammate's obs
             let mut num_teammates = 0;
             for (car_id, team, obs) in &cars {
-                if *team == current_car.team && *car_id != current_car.id {
+                if *team == info.team && *car_id != info.idx {
                     obs_vec.extend(obs);
                     num_teammates += 1;
                 }
@@ -128,7 +125,7 @@ impl Obs<SharedInfo> for MyObs {
             // opponent's obs
             let mut num_opponents = 0;
             for (_, team, obs) in &cars {
-                if *team != current_car.team {
+                if *team != info.team {
                     obs_vec.extend(obs);
                     num_opponents += 1;
                 }
@@ -149,7 +146,7 @@ impl Obs<SharedInfo> for MyObs {
 
 struct MyAction {
     actions_table: Vec<CarControls>,
-    action_buffer: [(u32, CarControls); 8],
+    action_buffer: [(usize, CarControls); 8],
 }
 
 impl Default for MyAction {
@@ -191,7 +188,7 @@ impl Default for MyAction {
 impl Action<SharedInfo> for MyAction {
     type Input = usize;
 
-    fn get_tick_skip() -> u32 {
+    fn get_tick_skip() -> u8 {
         8
     }
 
@@ -199,43 +196,55 @@ impl Action<SharedInfo> for MyAction {
         self.actions_table.len()
     }
 
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
 
     fn parse_actions(
         &mut self,
         actions: &[usize],
-        state: &GameStateA,
+        state: &ArenaState,
         _shared_info: &mut SharedInfo,
-    ) -> &[(u32, CarControls)] {
-        for ((buf, car), action) in self.action_buffer.iter_mut().zip(&state.cars).zip(actions) {
-            *buf = (car.id, self.actions_table[*action]);
+    ) -> &[(usize, CarControls)] {
+        for ((buf, (info, _)), action) in
+            self.action_buffer.iter_mut().zip(&state.cars).zip(actions)
+        {
+            *buf = (info.idx, self.actions_table[*action]);
         }
 
-        &self.action_buffer[..state.cars.len()]
+        &self.action_buffer[..state.num_cars()]
     }
 }
 
-struct CombinedReward {
-    rewards: Vec<Box<dyn Reward<SharedInfo>>>,
+struct WeightedReward {
+    func: Box<dyn Reward<SharedInfo>>,
+    weight: f32,
 }
 
-impl CombinedReward {
-    fn new(rewards: Vec<Box<dyn Reward<SharedInfo>>>) -> Self {
-        Self { rewards }
-    }
+struct CombinedWeightedRewards {
+    rewards: Box<[WeightedReward]>,
 }
 
-impl Reward<SharedInfo> for CombinedReward {
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+macro_rules! new_rewards {
+    ($(($reward:expr, $weight:expr)),* $(,)?) => {
+        CombinedWeightedRewards {
+            rewards: vec![$(WeightedReward {
+                func: Box::new($reward) as Box<dyn Reward<SharedInfo>>,
+                weight: $weight
+            }),*].into_boxed_slice(),
+        }
+    };
+}
 
-    fn get_rewards(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> Vec<f32> {
+impl Reward<SharedInfo> for CombinedWeightedRewards {
+    fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
+
+    fn get_rewards(&mut self, state: &ArenaState, shared_info: &mut SharedInfo) -> Vec<f32> {
         let mut rewards: Vec<f32> = vec![0.0; state.cars.len()];
 
-        for reward_fn in &mut self.rewards {
-            let mut fn_rewards = reward_fn.get_rewards(state, _shared_info);
+        for reward in &mut self.rewards {
+            let fn_rewards = reward.func.get_rewards(state, shared_info);
 
-            for (i, reward) in fn_rewards.drain(..).enumerate() {
-                rewards[i] += reward;
+            for (total, extra) in rewards.iter_mut().zip(fn_rewards) {
+                *total += extra * reward.weight;
             }
         }
 
@@ -246,14 +255,14 @@ impl Reward<SharedInfo> for CombinedReward {
 struct DistanceToBallReward;
 
 impl Reward<SharedInfo> for DistanceToBallReward {
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
+    fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
 
-    fn get_rewards(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> Vec<f32> {
+    fn get_rewards(&mut self, state: &ArenaState, _shared_info: &mut SharedInfo) -> Vec<f32> {
         state
             .cars
             .iter()
-            .map(|car| {
-                let car_ball_dist = car.state.pos.distance(state.ball.pos);
+            .map(|(_, car)| {
+                let car_ball_dist = car.pos.distance(state.ball.pos);
 
                 -car_ball_dist
             })
@@ -261,18 +270,58 @@ impl Reward<SharedInfo> for DistanceToBallReward {
     }
 }
 
+struct OnGoal;
+
+fn ball_within_hoops_goal_xy_margin_eq(x: f32, y: f32) -> f32 {
+    const SCALE_Y: f32 = 0.9;
+    const OFFSET_Y: f32 = 2770.0;
+    const RADIUS_SQ: f32 = 716.0 * 716.0;
+
+    let dy = y.abs() * SCALE_Y - OFFSET_Y;
+    let dist_sq = x * x + dy * dy;
+    dist_sq - RADIUS_SQ
+}
+
+impl Terminal<SharedInfo> for OnGoal {
+    fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
+
+    fn is_terminal(&mut self, state: &ArenaState, _shared_info: &mut SharedInfo) -> bool {
+        match state.game_mode() {
+            GameMode::Soccar | GameMode::Heatseeker | GameMode::Snowday => {
+                state.ball.pos.y.abs()
+                    > consts::goal::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y
+                        + consts::ball::get_radius(state.game_mode())
+            }
+            GameMode::Hoops => {
+                if state.ball.pos.z < consts::goal::HOOPS_GOAL_SCORE_THRESHOLD_Z {
+                    ball_within_hoops_goal_xy_margin_eq(state.ball.pos.x, state.ball.pos.y) < 0.0
+                } else {
+                    false
+                }
+            }
+            GameMode::Dropshot => {
+                state.ball.pos.z < -consts::ball::get_radius(state.game_mode()) * 1.75
+            }
+            GameMode::TheVoid => false,
+        }
+    }
+}
+
 #[derive(Default)]
-struct MyTerminal {
+struct EpisodeDurationMax {
     episode_duration: f32,
 }
 
-impl Terminal<SharedInfo> for MyTerminal {
-    fn reset(&mut self, _initial_state: &GameStateA, shared_info: &mut SharedInfo) {
+impl Truncate<SharedInfo> for EpisodeDurationMax {
+    fn reset(&mut self, _initial_state: &ArenaState, shared_info: &mut SharedInfo) {
         self.episode_duration = shared_info.rng.random_range(0.0..5.0);
     }
 
-    fn is_terminal(&mut self, state: &GameStateA, _shared_info: &mut SharedInfo) -> bool {
-        let elapsed = state.tick_count as f32 / state.tick_rate / 60.0;
+    fn should_truncate(&mut self, state: &ArenaState, shared_info: &mut SharedInfo) -> bool {
+        const SECS_TO_MIN: f32 = 1.0 / 60.0;
+
+        let elapsed =
+            (state.tick_count - shared_info.start_tick) as f32 * consts::TICK_TIME * SECS_TO_MIN;
 
         // reset after some minutes
         if elapsed < self.episode_duration {
@@ -283,71 +332,79 @@ impl Terminal<SharedInfo> for MyTerminal {
     }
 }
 
-struct MyTruncate;
-
-impl Truncate<SharedInfo> for MyTruncate {
-    fn reset(&mut self, _initial_state: &GameStateA, _shared_info: &mut SharedInfo) {}
-
-    fn should_truncate(&mut self, _state: &GameStateA, _shared_info: &mut SharedInfo) -> bool {
-        false
-    }
-}
-
 fn main() {
-    init(None, true);
+    const RENDER: bool = false;
+    const GAME_SPEED: u8 = 2;
 
-    let render = false;
+    init_from_default(cfg!(not(debug_assertions))).unwrap();
 
-    let mut arena = Arena::default_standard();
-    arena
-        .pin_mut()
-        .set_goal_scored_callback(|arena, _, _| arena.reset_to_random_kickoff(None), 0);
+    // configure arena to our liking
+    let mut arena = Arena::new(GameMode::Soccar);
+
+    arena.add_car(Team::Orange, CarBodyConfig::OCTANE);
+    arena.add_car(Team::Blue, CarBodyConfig::OCTANE);
+
+    if RENDER {
+        arena.set_vis_enabled(true);
+    }
 
     let mut env = Env::new(
         arena,
         MyStateSetter,
-        MySharedInfoProvider,
         MyObs,
         MyAction::default(),
-        CombinedReward::new(vec![Box::new(DistanceToBallReward)]),
-        MyTerminal::default(),
-        MyTruncate,
+        new_rewards!((DistanceToBallReward, 1.0)),
+        OnGoal,
+        EpisodeDurationMax::default(),
         SharedInfo::default(),
     );
 
     let (mut state, mut obs) = env.reset();
 
-    if render {
-        // this only needs to be called once
-        env.enable_rendering(false);
-    }
-
     // extra render stuff
     // this method ensures no game speed slowdowns
     // and no weirdness from different game speeds
-    let mut tick_rate = Duration::from_secs_f32(MyAction::get_tick_skip() as f32 / 120.);
+    let tick_rate = Duration::from_secs_f32(consts::TICK_TIME / f32::from(GAME_SPEED));
     let mut next_time = Instant::now() + tick_rate;
 
-    let ticks_per_min = MyAction::get_tick_skip() as f32 / 120.0 / 60.0;
+    let ticks_per_min = MyAction::get_tick_skip() as f32 * consts::TICK_TIME / 60.0;
     let start_time = Instant::now();
     let mut prev_time = Instant::now();
-    let mut total_steps = 0;
+    let mut total_steps = 0u64;
 
-    let mut rng = rand::rng();
+    let mut action_rng = rand::rng().sample_iter(Uniform::new(0usize, 24).unwrap());
+
     loop {
         // random actions
-        let actions = vec![rng.random_range(0..24); obs.len()];
+        let actions = action_rng.by_ref().take(obs.len()).collect::<Vec<_>>();
 
-        if !render || !env.is_paused() {
-            let result = env.step(&state, &actions);
-            total_steps += 1;
+        let result = if RENDER {
+            env.pre_step(&state, &actions);
 
-            if result.is_terminal || result.truncated {
-                (state, obs) = env.reset();
-            } else {
-                obs = result.obs;
-                state = result.state;
+            for _ in 0..env.get_tick_skip() {
+                env.step_arena_one_tick();
+
+                if RENDER {
+                    // ensure we only run at the requested game speed
+                    let wait_time = next_time - Instant::now();
+                    if wait_time > Duration::default() {
+                        sleep(wait_time);
+                    }
+                    next_time += tick_rate;
+                }
             }
+
+            env.post_step()
+        } else {
+            env.step(&state, &actions)
+        };
+
+        total_steps += 1;
+        if result.is_terminal || result.truncated {
+            (state, obs) = env.reset();
+        } else {
+            obs = result.obs;
+            state = result.state;
         }
 
         if Instant::now() - prev_time > Duration::from_secs(5) {
@@ -360,19 +417,6 @@ fn main() {
             );
 
             prev_time = Instant::now();
-        }
-
-        if render {
-            // check for state settings requests
-            // also sets the requested game speed & pause state
-            env.handle_incoming_states(&mut tick_rate).unwrap();
-
-            // ensure we only run at the requested game speed
-            let wait_time = next_time - Instant::now();
-            if wait_time > Duration::default() {
-                sleep(wait_time);
-            }
-            next_time += tick_rate;
         }
     }
 }

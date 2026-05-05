@@ -1,15 +1,17 @@
 [package]
 name = "rlgym"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.91"
 
 [dependencies]
-ahash = "0.8.12"
-rocketsim_rs = { version = "0.35.3", features = ["glam"] }
+rocketsim = { git = "https://github.com/VirxEC/RocketSim.git", branch = "dropshot", features = [
+  "vis"
+] }
 
 [dev-dependencies]
 rand = "0.9.1"
 
 [profile.release]
 lto = true
+debug = true
