@@ -65,6 +65,16 @@ where
         }
     }
 
+    /// Enables rendering via RocketSim's built-in renderer.
+    ///
+    /// Note that this is not intended for high-performance use and may significantly slow down the environment.
+    /// Usage is only suitable for real-time+ rendering, such as for debugging or visualization purposes.
+    ///
+    /// WARNING: Once rendering is enabled, it cannot be disabled.
+    pub fn do_rendering(&mut self) {
+        self.arena.set_vis_enabled(true);
+    }
+
     pub fn get_obs_space(&self) -> usize {
         self.observations.get_obs_space(&self.shared_info)
     }
