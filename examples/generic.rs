@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::{Rng, distr::Uniform, rngs::ThreadRng};
+use rand::{RngExt, distr::Uniform, rngs::ThreadRng};
 use rlgym::{
     Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
     rocketsim::{
@@ -343,10 +343,6 @@ fn main() {
 
     arena.add_car(Team::Orange, CarBodyConfig::OCTANE);
     arena.add_car(Team::Blue, CarBodyConfig::OCTANE);
-
-    if RENDER {
-        arena.set_vis_enabled(true);
-    }
 
     let mut env = Env::new(
         arena,

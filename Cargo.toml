@@ -5,13 +5,17 @@ edition = "2024"
 rust-version = "1.91"
 
 [dependencies]
-rocketsim = { git = "https://github.com/VirxEC/RocketSim.git", branch = "dropshot", features = [
-  "vis"
-] }
+rlviser-rocketsim = {
+  git = "https://github.com/VirxEC/rlviser-rocketsim.git",
+}
+rocketsim = {
+  git = "https://github.com/VirxEC/RocketSim.git",
+  branch = "vis-api"
+}
 
 [dev-dependencies]
-rand = "0.9.1"
+rand = "0.10.1"
 
 [profile.release]
-lto = true
 debug = true
+lto = true
