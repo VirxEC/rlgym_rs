@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::{RngExt, distr::Uniform, rngs::ThreadRng};
+use rand::{RngExt, rngs::ThreadRng};
 use rlgym::{
     Action, Env, FullObs, Obs, Reward, SharedInfoProvider, StateSetter, Terminal, Truncate,
     rocketsim::{
@@ -146,6 +146,11 @@ impl Obs<SharedInfo> for MyObs {
 
 struct MyAction {
     actions_table: Vec<CarControls>,
+    ground_mask: Vec<bool>,
+    air_mask: Vec<bool>,
+    jump_mask: Vec<bool>,
+    boost_mask: Vec<bool>,
+    action_masks: Vec<Vec<bool>>,
     action_buffer: [(usize, CarControls); 8],
 }
 
@@ -176,10 +181,40 @@ impl Default for MyAction {
             }
         }
 
-        dbg!(actions_table.len());
+        // ── Precompute masks ───────────────────────────────────────────
+        let num_actions = actions_table.len();
+        let mut ground_mask = vec![false; num_actions];
+        let mut air_mask = vec![false; num_actions];
+        let mut jump_mask = vec![false; num_actions];
+        let mut boost_mask = vec![false; num_actions];
+
+        for (i, action) in actions_table.iter().enumerate() {
+            if action.jump {
+                jump_mask[i] = true;
+            }
+
+            if action.boost {
+                boost_mask[i] = true;
+            }
+
+            // All actions in this table are ground actions
+            ground_mask[i] = true;
+
+            // Ground actions that are also valid in the air
+            // (no handbrake when throttle matches boost state)
+            let boost_f = if action.boost { 1.0 } else { 0.0 };
+            if action.throttle == boost_f && (action.yaw != 0.0) == action.handbrake {
+                air_mask[i] = true;
+            }
+        }
 
         Self {
             actions_table,
+            ground_mask,
+            air_mask,
+            jump_mask,
+            boost_mask,
+            action_masks: Vec::new(),
             action_buffer: Default::default(),
         }
     }
@@ -197,6 +232,49 @@ impl Action<SharedInfo> for MyAction {
     }
 
     fn reset(&mut self, _initial_state: &ArenaState, _shared_info: &mut SharedInfo) {}
+
+    fn get_action_masks(
+        &mut self,
+        state: &ArenaState,
+        _shared_info: &mut SharedInfo,
+    ) -> Vec<Vec<bool>> {
+        self.action_masks.clear();
+
+        for (_, car_state) in &state.cars {
+            let num_actions = self.actions_table.len();
+            let mut result = vec![false; num_actions];
+
+            // Ground or air mask
+            if car_state.is_on_ground {
+                for (r, &m) in result.iter_mut().zip(self.ground_mask.iter()) {
+                    *r |= m;
+                }
+            } else {
+                for (r, &m) in result.iter_mut().zip(self.air_mask.iter()) {
+                    *r |= m;
+                }
+            }
+
+            // Remove boost actions when out of boost
+            if car_state.boost == 0.0 {
+                for (r, &m) in result.iter_mut().zip(self.boost_mask.iter()) {
+                    *r &= !m;
+                }
+            }
+
+            // Enable jump actions when the car can still jump/flip or is turtled
+            let is_turtled = car_state.world_contact_normal.is_some_and(|n| n.z > 0.9);
+            if car_state.has_flip_or_jump() || is_turtled {
+                for (r, &m) in result.iter_mut().zip(self.jump_mask.iter()) {
+                    *r |= m;
+                }
+            }
+
+            self.action_masks.push(result);
+        }
+
+        self.action_masks.clone()
+    }
 
     fn parse_actions(
         &mut self,
@@ -355,7 +433,7 @@ fn main() {
         SharedInfo::default(),
     );
 
-    let (mut state, mut obs) = env.reset();
+    let (mut state, mut _obs, mut action_masks) = env.reset();
 
     // extra render stuff
     // this method ensures no game speed slowdowns
@@ -368,11 +446,26 @@ fn main() {
     let mut prev_time = Instant::now();
     let mut total_steps = 0u64;
 
-    let mut action_rng = rand::rng().sample_iter(Uniform::new(0usize, 24).unwrap());
+    let mut action_rng = rand::rng();
 
     loop {
-        // random actions
-        let actions = action_rng.by_ref().take(obs.len()).collect::<Vec<_>>();
+        // pick a random valid action for each car using action masks
+        let actions: Vec<usize> = action_masks
+            .iter()
+            .map(|mask| {
+                let mut selected = 0;
+                let mut count = 0u32;
+                for (i, valid) in mask.iter().enumerate() {
+                    if *valid {
+                        count += 1;
+                        if action_rng.random_range(0..count) == 0 {
+                            selected = i;
+                        }
+                    }
+                }
+                selected
+            })
+            .collect();
 
         let result = if RENDER {
             env.pre_step(&state, &actions);
@@ -397,10 +490,11 @@ fn main() {
 
         total_steps += 1;
         if result.is_terminal || result.truncated {
-            (state, obs) = env.reset();
+            (state, _obs, action_masks) = env.reset();
         } else {
-            obs = result.obs;
+            _obs = result.obs;
             state = result.state;
+            action_masks = result.action_masks;
         }
 
         if Instant::now() - prev_time > Duration::from_secs(5) {

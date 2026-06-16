@@ -3,9 +3,11 @@ pub use rocketsim;
 use rocketsim::{Arena, ArenaState, CarControls};
 
 pub type FullObs = Vec<Vec<f32>>;
+pub type ActionMasks = Vec<Vec<bool>>;
 
 pub struct StepResult {
     pub obs: FullObs,
+    pub action_masks: ActionMasks,
     pub rewards: Vec<f32>,
     pub is_terminal: bool,
     pub truncated: bool,
@@ -95,7 +97,7 @@ where
     }
 
     /// returns next obs
-    pub fn reset(&mut self) -> (ArenaState, FullObs) {
+    pub fn reset(&mut self) -> (ArenaState, FullObs, Vec<Vec<bool>>) {
         self.state_setter
             .apply(&mut self.arena, &mut self.shared_info);
 
@@ -108,12 +110,13 @@ where
         self.reward.reset(&state, &mut self.shared_info);
 
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
+        let masks = self.action.get_action_masks(&state, &mut self.shared_info);
         debug_assert!(
             !obs.iter().any(|a| a.iter().copied().any(f32::is_nan)),
             "NaN in obs: {obs:?}"
         );
 
-        (state, obs)
+        (state, obs, masks)
     }
 
     pub fn get_tick_skip(&self) -> u8 {
@@ -143,6 +146,7 @@ where
 
         self.shared_info.update(&state);
         let obs = self.observations.build_obs(&state, &mut self.shared_info);
+        let action_masks = self.action.get_action_masks(&state, &mut self.shared_info);
         let rewards = self.reward.get_rewards(&state, &mut self.shared_info);
         let is_terminal = self.terminal.is_terminal(&state, &mut self.shared_info);
         let truncated = self.truncate.should_truncate(&state, &mut self.shared_info);
@@ -158,6 +162,7 @@ where
 
         StepResult {
             obs,
+            action_masks,
             rewards,
             is_terminal,
             truncated,
@@ -203,6 +208,7 @@ pub trait Action<SI> {
         state: &ArenaState,
         shared_info: &'a mut SI,
     ) -> &'a [(usize, CarControls)];
+    fn get_action_masks(&mut self, state: &ArenaState, shared_info: &mut SI) -> Vec<Vec<bool>>;
 }
 
 pub trait Reward<SI> {
