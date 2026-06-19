@@ -472,7 +472,7 @@ fn main() {
             env.pre_step(&state, &actions);
 
             for _ in 0..env.get_tick_skip() {
-                env.step_arena_one_tick();
+                env.arena.step_tick();
 
                 if RENDER {
                     // ensure we only run at the requested game speed

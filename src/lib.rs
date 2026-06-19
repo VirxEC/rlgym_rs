@@ -78,7 +78,7 @@ where
     TERM: Terminal<SI>,
     TRUNC: Truncate<SI>,
 {
-    arena: Arena,
+    pub arena: Arena,
     state_setter: SS,
     observations: OBS,
     action: ACT,
@@ -228,10 +228,6 @@ where
         for (car_idx, action) in parsed_actions.iter().copied() {
             self.arena.set_car_controls(car_idx, action);
         }
-    }
-
-    pub fn step_arena_one_tick(&mut self) -> &[ArenaEvent] {
-        self.arena.step_tick()
     }
 
     pub fn post_step(&mut self) -> StepResult {
