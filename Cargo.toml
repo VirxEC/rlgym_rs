@@ -9,8 +9,8 @@ rlviser-rocketsim = {
   git = "https://github.com/VirxEC/rlviser-rocketsim.git",
 }
 rocketsim = {
-  git = "https://github.com/VirxEC/RocketSim.git",
-  branch = "vis-api"
+  git = "https://github.com/ZealanL/RocketSim.git",
+  branch = "v3-rust"
 }
 
 [dev-dependencies]
