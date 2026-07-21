@@ -228,6 +228,10 @@ impl Action<SharedInfo> for MyAction {
         8
     }
 
+    fn get_action_delay() -> u8 {
+        0
+    }
+
     fn get_action_space(&self, _shared_info: &SharedInfo) -> usize {
         self.actions_table.len()
     }

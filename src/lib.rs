@@ -87,6 +87,7 @@ where
     pub truncate: TRUNC,
     pub shared_info: SI,
     tick_skip: u8,
+    action_delay: u8,
     events: Vec<ArenaEvent>,
 }
 
@@ -121,6 +122,7 @@ where
             truncate,
             shared_info,
             tick_skip: ACT::get_tick_skip(),
+            action_delay: ACT::get_action_delay(),
             events: Vec::new(),
         }
     }
@@ -186,6 +188,12 @@ where
         }
     }
 
+    /// Snapshot the simulator's current state without updating environment
+    /// components or producing observations.
+    pub fn current_state(&self) -> GameState {
+        self.get_game_state()
+    }
+
     /// returns next obs
     pub fn reset(&mut self) -> (GameState, FullObs, Vec<Vec<bool>>) {
         self.events.clear();
@@ -210,8 +218,22 @@ where
         (state, obs, masks)
     }
 
+    /// Number of simulator ticks in one policy decision interval.
+    ///
+    /// When action delay is enabled, the previous action is held for
+    /// [`Self::get_action_delay`] ticks and the newly selected action is held
+    /// for the remaining ticks in this interval.
     pub fn get_tick_skip(&self) -> u8 {
         self.tick_skip
+    }
+
+    /// Number of simulator ticks for which the previous action is held after
+    /// an observation is collected and before the newly selected action is applied.
+    ///
+    /// This models controller/inference latency (for example, RLBot's one-tick
+    /// action delay). The collector is responsible for scheduling the split step.
+    pub fn get_action_delay(&self) -> u8 {
+        self.action_delay
     }
 
     pub fn pre_step(
@@ -220,13 +242,46 @@ where
         raw_actions: &[<ACT as Action<SI>>::Input],
     ) {
         self.events.clear();
+        self.apply_actions(initial_state, raw_actions);
+    }
 
-        let parsed_actions =
-            self.action
-                .parse_actions(raw_actions, initial_state, &mut self.shared_info);
+    /// Clear per-step events and apply neutral controls to every car.
+    ///
+    /// This is used for the initial delayed segment after an environment reset,
+    /// before any policy action has been selected to hold.
+    pub fn pre_step_neutral(&mut self, state: &GameState) {
+        self.events.clear();
+        self.apply_neutral_actions(state);
+    }
+
+    /// Apply neutral controls to every car without clearing events or
+    /// finalizing a step.
+    pub fn apply_neutral_actions(&mut self, state: &GameState) {
+        for (info, _) in &state.cars {
+            self.arena
+                .set_car_controls(info.idx, CarControls::default());
+        }
+    }
+
+    /// Parse and apply actions without clearing events or finalizing a step.
+    ///
+    /// This supports splitting a policy decision interval into multiple physics
+    /// segments, such as holding the prior action during an action-delay window.
+    pub fn apply_actions(&mut self, state: &GameState, raw_actions: &[<ACT as Action<SI>>::Input]) {
+        let parsed_actions = self
+            .action
+            .parse_actions(raw_actions, state, &mut self.shared_info);
 
         for (car_idx, action) in parsed_actions.iter().copied() {
             self.arena.set_car_controls(car_idx, action);
+        }
+    }
+
+    /// Advance the simulator without building observations or evaluating
+    /// rewards, terminals, or truncation.
+    pub fn step_physics(&mut self, ticks: u8) {
+        for _ in 0..ticks {
+            self.events.extend_from_slice(self.arena.step_tick());
         }
     }
 
@@ -261,11 +316,7 @@ where
 
     pub fn step(&mut self, initial_state: &GameState, raw_actions: &[ACT::Input]) -> StepResult {
         self.pre_step(initial_state, raw_actions);
-
-        for _ in 0..self.tick_skip {
-            self.events.extend_from_slice(self.arena.step_tick());
-        }
-
+        self.step_physics(self.tick_skip);
         self.post_step()
     }
 }
@@ -288,7 +339,19 @@ pub trait Obs<SI> {
 pub trait Action<SI> {
     type Input;
 
+    /// Number of simulator ticks in one policy decision interval.
+    ///
+    /// With a non-zero [`Self::get_action_delay`], the previous action is held
+    /// for the delay and the newly selected action is held for the remaining
+    /// ticks.
     fn get_tick_skip() -> u8;
+
+    /// Number of ticks to hold the previous action before applying a newly
+    /// selected action. Defaults to zero for backwards compatibility.
+    fn get_action_delay() -> u8 {
+        0
+    }
+
     fn get_action_space(&self, shared_info: &SI) -> usize;
     fn reset(&mut self, initial_state: &GameState, shared_info: &mut SI);
     fn parse_actions<'a>(
