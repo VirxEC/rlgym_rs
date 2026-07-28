@@ -355,38 +355,11 @@ impl Reward<SharedInfo> for DistanceToBallReward {
 
 struct OnGoal;
 
-fn ball_within_hoops_goal_xy_margin_eq(x: f32, y: f32) -> f32 {
-    const SCALE_Y: f32 = 0.9;
-    const OFFSET_Y: f32 = 2770.0;
-    const RADIUS_SQ: f32 = 716.0 * 716.0;
-
-    let dy = y.abs() * SCALE_Y - OFFSET_Y;
-    let dist_sq = x * x + dy * dy;
-    dist_sq - RADIUS_SQ
-}
-
 impl Terminal<SharedInfo> for OnGoal {
     fn reset(&mut self, _initial_state: &GameState, _shared_info: &mut SharedInfo) {}
 
     fn is_terminal(&mut self, state: &GameState, _shared_info: &mut SharedInfo) -> bool {
-        match state.game_mode {
-            GameMode::Soccar | GameMode::Heatseeker | GameMode::Snowday => {
-                state.ball.pos.y.abs()
-                    > consts::goal::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y
-                        + consts::ball::get_radius(state.game_mode)
-            }
-            GameMode::Hoops => {
-                if state.ball.pos.z < consts::goal::HOOPS_GOAL_SCORE_THRESHOLD_Z {
-                    ball_within_hoops_goal_xy_margin_eq(state.ball.pos.x, state.ball.pos.y) < 0.0
-                } else {
-                    false
-                }
-            }
-            GameMode::Dropshot => {
-                state.ball.pos.z < -consts::ball::get_radius(state.game_mode) * 1.75
-            }
-            GameMode::TheVoid => false,
-        }
+        state.is_ball_scored()
     }
 }
 

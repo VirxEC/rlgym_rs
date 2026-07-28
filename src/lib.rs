@@ -1,3 +1,5 @@
+use std::io;
+
 use rlviser_rocketsim::ArenaRlviserExt;
 pub use rocketsim;
 use rocketsim::{
@@ -133,6 +135,21 @@ where
     /// Usage is only suitable for real-time+ rendering, such as for debugging or visualization purposes.
     pub fn set_rlviser_enabled(&mut self, enabled: bool) {
         self.arena.set_rlviser_enabled(enabled).unwrap();
+    }
+
+    /// Process control and state messages received from RLViser.
+    pub fn handle_rlviser_messages(&mut self) -> io::Result<()> {
+        self.arena.handle_rlviser_messages()
+    }
+
+    /// Returns whether RLViser has currently paused the simulation.
+    pub fn rlviser_paused(&self) -> bool {
+        self.arena.rlviser_paused()
+    }
+
+    /// Returns the simulation speed requested by RLViser.
+    pub fn rlviser_speed(&self) -> f32 {
+        self.arena.rlviser_speed()
     }
 
     pub fn get_obs_space(&self) -> usize {
