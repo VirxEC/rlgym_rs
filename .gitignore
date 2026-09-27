@@ -3,3 +3,5 @@
 rlviser*
 settings.txt
 Cargo.lock
+flamegraph.svg
+*.data*
