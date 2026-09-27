@@ -296,10 +296,28 @@ where
 
     /// Advance the simulator without building observations or evaluating
     /// rewards, terminals, or truncation.
+    ///
+    /// [`SharedInfoProvider::on_tick`] is called once per tick so rewards
+    /// (or other components) can accumulate per-tick data in `SharedInfo`
+    /// at low cost, without building a [`GameState`] every tick.
     pub fn step_physics(&mut self, ticks: u8) {
         for _ in 0..ticks {
-            self.events.extend_from_slice(self.arena.step_tick());
+            self.arena.step_tick();
+
+            let arena = &self.arena;
+            let tick_events = arena.get_last_step_events();
+            self.shared_info.on_tick(arena, tick_events);
+            self.events.extend_from_slice(tick_events);
         }
+    }
+
+    /// Advance the simulator by a single tick.
+    ///
+    /// Convenience wrapper around [`Self::step_physics`] for manual stepping
+    /// (e.g. render loops). Prefer this over `env.arena.step_tick()`, which
+    /// bypasses [`SharedInfoProvider::on_tick`] and per-step event tracking.
+    pub fn step_tick(&mut self) {
+        self.step_physics(1);
     }
 
     pub fn post_step(&mut self) -> StepResult {
@@ -341,6 +359,11 @@ where
 pub trait SharedInfoProvider {
     fn reset(&mut self, initial_state: &GameState);
     fn update(&mut self, game_state: &GameState);
+
+    /// Called once per simulator tick inside [`Env::step_physics`].
+    fn on_tick(&mut self, arena: &Arena, tick_events: &[ArenaEvent]) {
+        let _ = (arena, tick_events);
+    }
 }
 
 pub trait StateSetter<SI> {

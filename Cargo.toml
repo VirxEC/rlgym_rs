@@ -2,16 +2,11 @@
 name = "rlgym"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.95"
 
 [dependencies]
-rlviser-rocketsim = {
-  git = "https://github.com/VirxEC/rlviser-rocketsim.git",
-}
-rocketsim = {
-  git = "https://github.com/ZealanL/RocketSim.git",
-  branch = "v3-rust"
-}
+rlviser-rocketsim = "0.1.0"
+rocketsim = "0.2.0"
 
 [dev-dependencies]
 rand = "0.10.1"
